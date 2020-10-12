@@ -15,6 +15,8 @@ class client
 {
 private:
 	int parseHeader(char* header, std::map<std::string, std::string>* headerMap);
+	int valHeader(std::map<std::string, std::string>* headerMap);
+
 
 public:
 	SOCKET sock;

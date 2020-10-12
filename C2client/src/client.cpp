@@ -49,7 +49,10 @@ int client::clientConn(client* context, std::string hostname, std::string portN)
 	}
 	//Don't need result anymore
 	freeaddrinfo(context->result);
+	return 0;
 }
+
+//Sebd request
 int client::sendRequest(client* context, std::string request) {
 	int result;
 	if ((result = send(context->sock, request.c_str(), request.length(), 0)) == SOCKET_ERROR) {
@@ -72,19 +75,19 @@ int client::recvResponse(client* context){
 		free(recvBuff);
 		return result;
 	}
+
 	//ParseHeader for attributes/values. Store them in the headerMap
 	if (parseHeader(recvBuff, &context->headerMap)) {
 		OutputDebugStringA("Client: Unable to open temporary file for writing\n");
 		closesocket(context->sock);
 		free(recvBuff);
-		return result;
+		return -1;
 	}
-	//Valide Header
-	////
-	////
-	////
-	//Validate HEader
+	//Validate Header
+	if (valHeader(&context->headerMap)) {
 
+		return -1;
+	}
 	//Open file for writing
 	FILE* file;
 	fopen_s(&file, "temp.png", "wb");
@@ -99,8 +102,11 @@ int client::recvResponse(client* context){
 		fwrite(recvBuff, 1, result, file);
 		memset(recvBuff, 0, sizeof(recvBuff));
 	}
+	//Close socket
+	closesocket(context->sock);
 	//File can be closed now
 	fclose(file);
+	
 
 }
 
@@ -135,4 +141,10 @@ int client::parseHeader(char* header, std::map<std::string, std::string>* header
 	}
 	return 0;
 
+}
+
+//Validate Header (Validate GET Status)
+int client::valHeader(std::map<std::string, std::string>* headerMap) {
+	
+	return 0;
 }
