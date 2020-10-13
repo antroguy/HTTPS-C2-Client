@@ -68,6 +68,7 @@ int client::recvResponse(client* context){
 	int result;
 	//Bufer to hold data
 	char* recvBuff = (char*)malloc(sizeof(char) * 4096);
+
 	//Recieve Header
 	if ((result = recv(context->sock, recvBuff, 1024, 0)) == -1) {
 		OutputDebugStringA("Client: Did not recieve data from server");
@@ -84,10 +85,10 @@ int client::recvResponse(client* context){
 		return -1;
 	}
 	//Validate Header
-	if (valHeader(&context->headerMap)) {
+	/*if (valHeader(&context->headerMap)) {
 
 		return -1;
-	}
+	}*/
 	//Open file for writing
 	FILE* file;
 	fopen_s(&file, "temp.png", "wb");
@@ -107,6 +108,7 @@ int client::recvResponse(client* context){
 	//File can be closed now
 	fclose(file);
 	
+	return 0;
 
 }
 

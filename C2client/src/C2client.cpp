@@ -69,6 +69,7 @@ int main()
 			continue;
 		}
 		//Decode the image and get the commands
+
 		if ((HR = getCommands(&commands)) != S_OK) {
 			OutputDebugStringA("Server: Unable to grab encoded commands\n");
 			continue;
