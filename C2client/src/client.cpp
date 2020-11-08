@@ -2,6 +2,7 @@
 
 int client::clientInit() {
 	WSADATA wsaData;
+	wchar_t* dir;
 	int result;
 	//Initialize Winsock (Initiate use of WS2_32.dll)
 	//MAKEWORD(2,2) makes a request for version 2.2 of Winsock
@@ -10,6 +11,14 @@ int client::clientInit() {
 		OutputDebugStringA("Client: Failed Initializing WSAstartup: \n");
 		return result;
 	}
+	dir = 0;
+	if ((hresult = SHGetKnownFolderPath(FOLDERID_LocalAppData, 0, NULL, &dir)) != S_OK){
+		return -1;
+	}
+	filePath += dir;
+	filePath.append(L"\\Temp\\default.png");
+	CoTaskMemFree(static_cast<void*>(dir));
+
 }
 int client::clientConn(client* context, std::string hostname, std::string portN) {
 	int result;
@@ -85,13 +94,13 @@ int client::recvResponse(client* context){
 		return -1;
 	}
 	//Validate Header
-	/*if (valHeader(&context->headerMap)) {
+	if (valHeader(&context->headerMap)) {
 
 		return -1;
-	}*/
+	}
 	//Open file for writing
 	FILE* file;
-	fopen_s(&file, "temp.png", "wb");
+	_wfopen_s(&file, filePath.c_str(), L"wb");
 	if (file == NULL) {
 		OutputDebugStringA("Client: Unable to open temporary file for writing\n");
 		closesocket(context->sock);
@@ -110,6 +119,57 @@ int client::recvResponse(client* context){
 	
 	return 0;
 
+}
+int client::sendPost(client* context) {
+	int result = 0;
+	//fileSize
+	int fileSize = 0;
+	//Buffer for file
+	struct _stat64i32 statbuff;
+	//Handle for file
+	FILE* file;
+	//Open file in read mode (Binary)
+	_wfopen_s(&file, filePath.c_str(), L"rb");
+	//Check if file is null
+	if (file == NULL) {
+		OutputDebugStringA("Client: Unable to open temporary file for writing\n");
+		closesocket(context->sock);
+		return -1;
+	}
+	//Get file size
+	_wstat(filePath.c_str(), &statbuff);
+	fileSize = statbuff.st_size;
+	//Define header request
+	std::string postHeader = "POST /resources http/1.1\r\n";
+	//Craft Header Request
+	postHeader.append("Content-Length: " + std::to_string(fileSize) + "\r\n\r\n");
+	//Send the header
+	if ((result = send(context->sock, postHeader.c_str(), postHeader.length(), 0)) == SOCKET_ERROR) {
+		OutputDebugStringA("Client: Unable to send: \n");
+		closesocket(sock);
+		return result;
+	}
+	//Bytes read into Buffer
+	size_t bytesRecieved = 0;
+	//Buffer for file
+	char *bufferW = (char*)malloc(sizeof(char) * 4096);
+	//Small Delay before sending body
+	Sleep(200);
+	//Send file
+	while (!feof(file)) {
+		bytesRecieved = fread(bufferW, 1, 4096, file);
+		result = send(context->sock, bufferW, bytesRecieved, 0);
+		memset(bufferW, 0, sizeof(bufferW));
+	}
+	if (ferror(file)) {
+		return -1;
+	}
+	//File can be closed now
+	fclose(file);
+	free(bufferW);
+	//send body
+
+	return 0;
 }
 
 //Parse Header, store attributes and values in a header map
@@ -149,4 +209,9 @@ int client::parseHeader(char* header, std::map<std::string, std::string>* header
 int client::valHeader(std::map<std::string, std::string>* headerMap) {
 	
 	return 0;
+}
+
+void client::cleanup() {
+	//Cleanup WSA Environment
+	WSACleanup();
 }

