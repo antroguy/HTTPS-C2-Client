@@ -30,7 +30,7 @@ int client::clientConn(client* context, std::string hostname, std::string portN)
 	//getaddrinfo requesting the IP address/PORT for the server name. (Translation from an ANSI host name to an address)
 	if ((result = getaddrinfo(hostname.c_str(), portN.c_str(), &context->hints, &context->result)) != 0) {
 		OutputDebugStringA("Client: Failed to getaddrinfo for server: \n");
-		return result;
+		return -1;
 	}
 	context->ptr = context->result;
 	//Creates a socket that is bound to the specified transport service provider (AF_INET, Stream, TCP). We
@@ -38,14 +38,14 @@ int client::clientConn(client* context, std::string hostname, std::string portN)
 	for (context->ptr = context->result; context->ptr != NULL; context->ptr = context->ptr->ai_next) {
 		if ((context->sock = socket(context->ptr->ai_family, context->ptr->ai_socktype, context->ptr->ai_protocol)) == INVALID_SOCKET) {
 			OutputDebugStringA("Client: Failed to create socket: \n");
-			return result;
+			return -1;
 		}
 		//Connect to the server 
 		if ((result = connect(context->sock, context->ptr->ai_addr, (int)context->ptr->ai_addrlen)) == SOCKET_ERROR) {
 			closesocket(sock);
 			context->sock = INVALID_SOCKET;
 			OutputDebugStringA("Client: Unable to connect to server: \n");
-			return result;
+			return -1;
 		}
 
 		break;
@@ -54,7 +54,7 @@ int client::clientConn(client* context, std::string hostname, std::string portN)
 	if (context->ptr == NULL) {
 		OutputDebugStringA("Client: Unable to connect to server, null ptr returned \n");
 		freeaddrinfo(context->result);
-		return result;
+		return -1;
 	}
 	//Don't need result anymore
 	freeaddrinfo(context->result);
