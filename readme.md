@@ -8,7 +8,7 @@ To compile this program i recommend using Visual Studios 2019 with the following
 This program has only been tested on Windows 10 OS. 
 
 ### Summary/QuickStart Guide
-_(https://github.com/antroguy/HTTPS-C2-Server)
+https://github.com/antroguy/HTTPS-C2-Server
 
 ### Disclaimer
 Code samples for the C2 Client are provided for educational purposes. Adequate defenses can only be built by researching attack techniques available to malicious actors. Using this code against target systems without prior permission is illegal in most jurisdictions. The authors are not liable for any damages from misuse of this information or code.
